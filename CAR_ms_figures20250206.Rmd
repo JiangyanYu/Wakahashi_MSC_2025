@@ -1,0 +1,557 @@
+---
+title: "Generating figures for CAR project"
+author: "Jiangyan Yu (jiangyan.yu@uni-bonn.de)"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+---
+Note: 1. It is expected that low number of cells for DT condition. We have seen less cells after sorting.
+
+# general steps
+
+```{r global_options}
+knitr::opts_chunk$set(warning=FALSE, messgae=FALSE, fig.path='Figs/', results = "hide")
+## fig.width=4, fig.height=4
+```
+
+## load library
+
+```{r include=FALSE}
+rm(list=ls())
+gc()
+#CRAN packages
+list.of.packages <- c("readr",
+                      "cowplot",
+                      "useful",
+                      "stringr",
+                      "umap",
+                      "ggplot2",
+                      "reshape2",
+                      "dplyr",
+                      "tidyr",
+                      "Matrix.utils",
+                      "VGAM",
+                      "plotly",
+                      "future",
+                      "data.table"
+)
+
+# new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+# if(length(new.packages)>0) install.packages(new.packages)
+
+#BioconductoR packages
+list.of.bioc.packages <- c("tximport",
+                           "DESeq2",
+                           "Seurat",
+                           "slingshot",
+                           "flowCore",
+                           "biomaRt",
+                           "clusterProfiler",
+                           "org.Hs.eg.db",
+                           "org.Mm.eg.db",
+                           "GSEABase",
+                           "DOSE",
+                           "BiocGenerics",
+                           "DelayedArray",
+                           "DelayedMatrixStats",
+                           "limma",
+                           "S4Vectors",
+                           "SingleCellExperiment",
+                           "SummarizedExperiment",
+                           "batchelor",
+                           "annotables")
+new.packages.bioc <- list.of.bioc.packages[!(list.of.bioc.packages %in% installed.packages()[,"Package"])]
+
+if(length(new.packages.bioc)>0)if (!requireNamespace("BiocManager")) install.packages("BiocManager")
+BiocManager::install(new.packages.bioc, update = FALSE)
+
+lapply(c(list.of.packages,list.of.bioc.packages), require, character.only = TRUE)
+```
+
+# working directory
+
+```{r}
+system_dir = "/Users/jiangyanyu/Downloads//"
+# system_dir = "/home/jyu/rstudio/"
+# system_dir = "/home/yu.j/sciebo/"
+
+working_dir = system_dir
+```
+
+# doughnut function
+
+```{r}
+# The doughnut function permits to draw a donut plot
+doughnut <-
+function (x, labels = names(x), edges = 200, outer.radius = 0.8,
+          inner.radius=0.6, clockwise = FALSE,
+          init.angle = if (clockwise) 90 else 0, density = NULL,
+          angle = 45, col = NULL, border = FALSE, lty = NULL,
+          main = NULL, ...)
+{
+    if (!is.numeric(x) || any(is.na(x) | x < 0))
+        stop("'x' values must be positive.")
+    if (is.null(labels))
+        labels <- as.character(seq_along(x))
+    else labels <- as.graphicsAnnot(labels)
+    x <- c(0, cumsum(x)/sum(x))
+    dx <- diff(x)
+    nx <- length(dx)
+    plot.new()
+    pin <- par("pin")
+    xlim <- ylim <- c(-1, 1)
+    if (pin[1L] > pin[2L])
+        xlim <- (pin[1L]/pin[2L]) * xlim
+    else ylim <- (pin[2L]/pin[1L]) * ylim
+    plot.window(xlim, ylim, "", asp = 1)
+    if (is.null(col))
+        col <- if (is.null(density))
+          palette()
+        else par("fg")
+    col <- rep(col, length.out = nx)
+    border <- rep(border, length.out = nx)
+    lty <- rep(lty, length.out = nx)
+    angle <- rep(angle, length.out = nx)
+    density <- rep(density, length.out = nx)
+    twopi <- if (clockwise)
+        -2 * pi
+    else 2 * pi
+    t2xy <- function(t, radius) {
+        t2p <- twopi * t + init.angle * pi/180
+        list(x = radius * cos(t2p),
+             y = radius * sin(t2p))
+    }
+    for (i in 1L:nx) {
+        n <- max(2, floor(edges * dx[i]))
+        P <- t2xy(seq.int(x[i], x[i + 1], length.out = n),
+                  outer.radius)
+        polygon(c(P$x, 0), c(P$y, 0), density = density[i],
+                angle = angle[i], border = border[i],
+                col = col[i], lty = lty[i])
+        Pout <- t2xy(mean(x[i + 0:1]), outer.radius)
+        lab <- as.character(labels[i])
+        if (!is.na(lab) && nzchar(lab)) {
+            lines(c(1, 1.05) * Pout$x, c(1, 1.05) * Pout$y)
+            text(1.1 * Pout$x, 1.1 * Pout$y, labels[i],
+                 xpd = TRUE, adj = ifelse(Pout$x < 0, 1, 0),
+                 ...)
+        }
+        ## Add white disc          
+        Pin <- t2xy(seq.int(0, 1, length.out = n*nx),
+                  inner.radius)
+        polygon(Pin$x, Pin$y, density = density[i],
+                angle = angle[i], border = border[i],
+                col = "white", lty = lty[i])
+    }
+
+    title(main = main, ...)
+    invisible(NULL)
+}
+```
+
+# import saved files
+
+```{r}
+ms_figure_dir = paste0(system_dir,"/")
+
+CAR_seurat = readRDS(file = paste0(working_dir,"Dec10x_CAR_seurat.rds"))
+
+Idents(CAR_seurat) = "seurat_clusters"
+CAR_seurat = RenameIdents(CAR_seurat,
+                          "1" = "1:MSC",
+                          "0" = "0:adi_progenitor",
+                          "7" = "7:pre_adipocyte",
+                          "4" = "4:OLC_progenitor",
+                          "3" = "3:OLC",
+                          "5" = "5:fibroblast",
+                          "9" = "9:fibroblast",
+                          "6" = "6:pericyte",
+                          "10" = "10:chondrocyte",
+                          "13" = "13:endothelial",
+                          "12" = "12:prolifOCL",
+                          "2" = "2:RBC",
+                          "8" = "8:RBC",
+                          "15" = "15:neutrophil",
+                          "16" = "16:platelet",
+                          "11" = "11:undefined",
+                          "14" = "14:undefined")
+
+exclude_unwanted = subset(CAR_seurat,idents=c("0:adi_progenitor","1:MSC","7:pre_adipocyte","3:OLC","4:OLC_progenitor","5:fibroblast","9:fibroblast","6:pericyte","10:chondrocyte"))
+
+msc_ocl_seurat = readRDS(paste0(working_dir,"msc-ocl_seurat_umap0.95.rds"))
+
+# msc_olc_0.95_monocle3 = readRDS(file = paste0(working_dir,"msc_olc_0.95_monocle3_wo_pseudotime.rds"))
+
+CAR_seurat.markers = read.csv(file = paste0(working_dir,"Dec10x_degs.csv"))
+```
+
+# fig5C
+
+## left
+
+```{r}
+defined_colors = c("1:MSC" = "#001219",
+                   "0:adi_progenitor" = "#ffb703",
+                   "7:pre_adipocyte" = "#fb8500",
+                   "4:OLC_progenitor" = "#a8dadc",
+                   "3:OLC" = "#457b9d",
+                   "5:fibroblast" = "#cb997e",
+                   "9:fibroblast" = "#cb997e",
+                   "6:pericyte" = "#6b705c",
+                   "10:chondrocyte" = "#d00000",
+                   "13:endothelial" = "grey",
+                   "12:prolifOCL" = "grey",
+                    "2:RBC" = "grey",
+                    "8:RBC" = "grey",
+                    "15:neutrophil" = "grey",
+                    "16:platelet" = "grey",
+                    "11:undefined" = "grey",
+                    "14:undefined" = "grey")
+
+# pdf(file = paste0(ms_figure_dir,"1.0.UMAP_all_sequenced_cells.pdf"), width = 8, height = 6)
+
+DimPlot(CAR_seurat, reduction = "umap", dims = c(1,3),label = TRUE)+
+  scale_color_manual(values = defined_colors)+
+  theme_classic()+
+  labs(title = "All cells (9169 cells)")
+
+# dev.off()
+
+rm(defined_colors)
+```
+
+## right-density
+
+```{r}
+defined_colors = c("1:MSC" = "grey",
+                   "0:adi_progenitor" = "grey",
+                   "7:pre_adipocyte" = "grey",
+                   "4:OLC_progenitor" = "grey",
+                   "3:OLC" = "grey",
+                   "5:fibroblast" = "grey",
+                   "9:fibroblast" = "grey",
+                   "6:pericyte" = "grey",
+                   "10:chondrocyte" = "grey")
+
+# pdf(file = paste0(ms_figure_dir,"3.UMAP_remove_unwanted_cells_split_by_condition_with_density.pdf"), width = 8, height = 6)
+
+## same amount of cells per condition
+cell_selected = exclude_unwanted@meta.data[unlist(tapply(1:nrow(exclude_unwanted@meta.data),exclude_unwanted@meta.data$orig.ident,function(x) sample(x,1000))),]
+
+exclude_unwanted$orig.ident = factor(exclude_unwanted$orig.ident,levels = c("WT","IL","DT"))
+
+p = DimPlot(exclude_unwanted[,rownames(cell_selected)], reduction = "umap", dims = c(1,3),label = FALSE,split.by = "orig.ident")+
+  scale_color_manual(values = defined_colors)+
+  theme_classic()+
+  labs(title = "Exclude cells-not-interest (1k cells per UMAP)")
+
+ggplot(subset(p$data,orig.ident == "WT"),aes(UMAP_1,UMAP_3,color=ident))+
+  geom_point(size=0.7)+
+  xlim(-20,15)+
+  ylim(-25,35)+
+  scale_color_manual(values = defined_colors)+
+  geom_density_2d(color="grey")+
+  theme_classic()+
+  labs(title = "WT, 1000 cells")
+
+ggplot(subset(p$data,orig.ident == "IL"),aes(UMAP_1,UMAP_3,color=ident))+
+  geom_point(size=0.7)+
+  xlim(-20,15)+
+  ylim(-25,35)+
+  scale_color_manual(values = defined_colors)+
+  geom_density_2d(color="grey")+
+  theme_classic()+
+  labs(title = "IL, 1000 cells")
+
+ggplot(subset(p$data,orig.ident == "DT"),aes(UMAP_1,UMAP_3,color=ident))+
+  geom_point(size=0.7)+
+  xlim(-20,15)+
+  ylim(-25,35)+
+  scale_color_manual(values = defined_colors)+
+  geom_density_2d(color="grey")+
+  theme_classic()+
+  labs(title = "DT, 1000 cells")
+
+# dev.off()
+
+rm(defined_colors, p, cell_selected)
+```
+
+## right-donut
+
+```{r}
+defined_colors = c("1:MSC" = "#001219",
+                   "0:adi_progenitor" = "#ffb703",
+                   "7:pre_adipocyte" = "#fb8500",
+                   "4:OLC_progenitor" = "#a8dadc",
+                   "3:OLC" = "#457b9d",
+                   "10:chondrocyte" = "#d00000",
+                   "5:fibroblast" = "#cb997e",
+                   "9:fibroblast" = "#cb997e",
+                   "6:pericyte" = "#6b705c")
+
+# pdf(file = paste0(ms_figure_dir,"4.doughnut_plot_remove_unwanted_cells_split_by_condition.pdf"), width = 8, height = 6)
+
+tmp_data = cbind(exclude_unwanted@meta.data,label = exclude_unwanted@active.ident)
+tmp_data =  table(tmp_data$orig.ident,tmp_data$label) %>% as.data.frame()
+
+tmp_data$Var2 = factor(tmp_data$Var2,levels = c("1:MSC","0:adi_progenitor","7:pre_adipocyte","4:OLC_progenitor","3:OLC","10:chondrocyte","5:fibroblast","9:fibroblast","6:pericyte"))
+
+#re-order data frame based on factor levels 
+tmp_data <- tmp_data[order(tmp_data$Var2),]
+
+doughnut( tmp_data[tmp_data$Var1 %in% "WT","Freq"] , 
+          inner.radius=0.5,
+          angle = 0,
+          init.angle = 90,
+          col = defined_colors,
+          labels = tmp_data[tmp_data$Var1 %in% "WT","Var2"],
+          main = "WT")
+
+doughnut( tmp_data[tmp_data$Var1 %in% "IL","Freq"] , 
+          inner.radius=0.5,
+          angle = 0,
+          init.angle = 90,
+          col = defined_colors,
+          labels = tmp_data[tmp_data$Var1 %in% "IL","Var2"],
+          main = "IL")
+
+doughnut( tmp_data[tmp_data$Var1 %in% "DT","Freq"] , 
+          inner.radius=0.5,
+          angle = 0,
+          init.angle = 90,
+          col = defined_colors,
+          labels = tmp_data[tmp_data$Var1 %in% "DT","Var2"],
+          main = "DT")
+
+rm(tmp_data,defined_colors)
+# dev.off()
+```
+
+
+# fig5D
+
+## left
+
+```{r}
+defined_colors = c("1:MSC" = "#001219",
+                   "0:adi_progenitor" = "#ffb703",
+                   "7:pre_adipocyte" = "#fb8500",
+                   "4:OLC_progenitor" = "#a8dadc",
+                   "3:OLC" = "#457b9d")
+
+# pdf(file = paste0(ms_figure_dir,"6.UMAP_msc_bone_fat_cells.pdf"), width = 8, height = 6)
+
+DimPlot(msc_ocl_seurat, reduction = "umap", dims = c(1,3),label = TRUE)+
+  scale_color_manual(values = defined_colors)+
+  theme_classic()+
+  labs(title = "msc-bone-fat cells only (5702 cells)")
+
+# dev.off()
+
+rm(defined_colors)
+```
+
+## right-density
+
+```{r}
+defined_colors = c("1:MSC" = "grey",
+                   "0:adi_progenitor" = "grey",
+                   "7:pre_adipocyte" = "grey",
+                   "4:OLC_progenitor" = "grey",
+                   "3:OLC" = "grey",
+                   "5:fibroblast" = "grey",
+                   "9:fibroblast" = "grey",
+                   "6:pericyte" = "grey",
+                   "10:chondrocyte" = "grey")
+
+# pdf(file = paste0(ms_figure_dir,"7.UMP_density_msc-bone-fat_split_by_condition.pdf"), width = 8, height = 6)
+
+## same amount of cells per condition
+cell_selected = msc_ocl_seurat@meta.data[unlist(tapply(1:nrow(msc_ocl_seurat@meta.data),msc_ocl_seurat@meta.data$orig.ident,function(x) sample(x,887))),]
+
+msc_ocl_seurat$orig.ident = factor(msc_ocl_seurat$orig.ident,levels = c("WT","IL","DT"))
+
+p = DimPlot(msc_ocl_seurat[,rownames(cell_selected)], reduction = "umap", dims = c(1,3),label = FALSE,split.by = "orig.ident")+
+  scale_color_manual(values = defined_colors)+
+  theme_classic()+
+  labs(title = "Exclude cells-not-interest (1k cells per UMAP)")
+
+ggplot(subset(p$data,orig.ident == "WT"),aes(UMAP_1,UMAP_3,color=ident))+
+  geom_point(size=0.7)+
+  xlim(-15,10)+
+  ylim(-7,6)+
+  scale_color_manual(values = defined_colors)+
+  geom_density_2d(color="grey")+
+  theme_classic()+
+  labs(title = "WT, 887 cells")
+
+ggplot(subset(p$data,orig.ident == "IL"),aes(UMAP_1,UMAP_3,color=ident))+
+  geom_point(size=0.7)+
+  xlim(-15,10)+
+  ylim(-7,6)+
+  scale_color_manual(values = defined_colors)+
+  geom_density_2d(color="grey")+
+  theme_classic()+
+  labs(title = "IL, 887 cells")
+
+ggplot(subset(p$data,orig.ident == "DT"),aes(UMAP_1,UMAP_3,color=ident))+
+  geom_point(size=0.7)+
+  xlim(-15,10)+
+  ylim(-7,6)+
+  scale_color_manual(values = defined_colors)+
+  geom_density_2d(color="grey")+
+  theme_classic()+
+  labs(title = "DT, 887 cells")
+
+# dev.off()
+
+rm(defined_colors, p, cell_selected)
+```
+
+## right-donut
+
+```{r}
+defined_colors = c("1:MSC" = "#001219",
+                   "0:adi_progenitor" = "#ffb703",
+                   "7:pre_adipocyte" = "#fb8500",
+                   "4:OLC_progenitor" = "#a8dadc",
+                   "3:OLC" = "#457b9d")
+
+# pdf(file = paste0(ms_figure_dir,"8.doughnut_msc-bone-fat_split_by_condition.pdf"), width = 8, height = 6)
+
+tmp_data = cbind(msc_ocl_seurat@meta.data,label = msc_ocl_seurat@active.ident)
+tmp_data =  table(tmp_data$orig.ident,tmp_data$label) %>% as.data.frame()
+
+tmp_data$Var2 = factor(tmp_data$Var2,levels = c("1:MSC","0:adi_progenitor","7:pre_adipocyte","4:OLC_progenitor","3:OLC"))
+
+#re-order data frame based on factor levels 
+tmp_data <- tmp_data[order(tmp_data$Var2),]
+
+doughnut( tmp_data[tmp_data$Var1 %in% "WT","Freq"] , 
+          inner.radius=0.5,
+          angle = 0,
+          init.angle = 90,
+          col = defined_colors,
+          labels = tmp_data[tmp_data$Var1 %in% "WT","Var2"],
+          main = "WT")
+
+doughnut( tmp_data[tmp_data$Var1 %in% "IL","Freq"] , 
+          inner.radius=0.5,
+          angle = 0,
+          init.angle = 90,
+          col = defined_colors,
+          labels = tmp_data[tmp_data$Var1 %in% "IL","Var2"],
+          main = "IL")
+
+doughnut( tmp_data[tmp_data$Var1 %in% "DT","Freq"] , 
+          inner.radius=0.5,
+          angle = 0,
+          init.angle = 90,
+          col = defined_colors,
+          labels = tmp_data[tmp_data$Var1 %in% "DT","Var2"],
+          main = "DT")
+
+rm(tmp_data,defined_colors)
+# dev.off()
+```
+
+# figS4
+
+## figS5B
+
+
+```{r,fig.width=8,fig.height=12}
+# pdf(file = paste0(ms_figure_dir,"1.1.1.DEG_heatmap.pdf"), width = 8, height = 12)
+plot_genes = subset(CAR_seurat.markers,p_val < 0.01 & avg_log2FC > 0.5 & p_val_adj < 0.01)
+test = plot_genes %>% group_by(cluster) %>% dplyr::top_n(n = 5, wt = avg_log2FC)
+test$cluster = factor(test$cluster,levels = c(1,0,7,4,3,5,9,6,10,13,12,2,8,15,16,11,14))
+test = test[order(test$cluster),]
+
+defined_colors = c("1:MSC" = "#001219",
+                   "0:adi_progenitor" = "#ffb703",
+                   "7:pre_adipocyte" = "#fb8500",
+                   "4:OLC_progenitor" = "#a8dadc",
+                   "3:OLC" = "#457b9d",
+                   "5:fibroblast" = "#cb997e",
+                   "9:fibroblast" = "#cb997e",
+                   "6:pericyte" = "#6b705c",
+                   "10:chondrocyte" = "#d00000",
+                   "13:endothelial" = "grey",
+                   "12:prolifOCL" = "grey",
+                    "2:RBC" = "grey",
+                    "8:RBC" = "grey",
+                    "15:neutrophil" = "grey",
+                    "16:platelet" = "grey",
+                    "11:undefined" = "grey",
+                    "14:undefined" = "grey")
+
+DoHeatmap(CAR_seurat,
+          features = test$gene,
+          group.colors = defined_colors,
+          slot = "data",
+          angle = 90,
+          group.bar.height = 0.01,
+          draw.lines = TRUE,
+          size = 3)+
+  scale_fill_gradientn(colours = c("white","pink","red"))
+  
+  
+
+
+# dev.off()
+
+```
+
+## figS5C-D
+
+```{r}
+# pdf(file = paste0(ms_figure_dir,"1.1.5.DEG_cluster1_msc-bone-fat_cells.pdf"), width = 14, height = 6)
+tmp_gene = c("Fbln1", "Cbln1")
+FeaturePlot(msc_ocl_seurat,
+            features = tmp_gene,
+            ncol = 2,
+            dims = c(1,3),
+            cols = c("grey","pink","red"))
+# dev.off()
+rm(tmp_gene)
+
+
+# pdf(file = paste0(ms_figure_dir,"1.1.5.DEG_cluster7_msc-bone-fat_cells.pdf"), width =  14, height = 18)
+tmp_gene = c("Jun","Junb","Jund","Fosb","Fos","Egr1")
+FeaturePlot(msc_ocl_seurat,
+            features = tmp_gene,
+            ncol = 2,
+            dims = c(1,3),
+            cols = c("grey","pink","red"))
+# dev.off()
+rm(tmp_gene)
+
+# pdf(file = paste0(ms_figure_dir,"1.1.5.DEG_cluster4_msc-bone-fat_cells.pdf"), width =  14, height = 18)
+tmp_gene = c("Postn","Wif1","Kcnk2","Limch1","Mmp13")
+FeaturePlot(msc_ocl_seurat,
+            features = tmp_gene,
+            ncol = 2,
+            dims = c(1,3),
+            cols = c("grey","pink","red"))
+# dev.off()
+rm(tmp_gene)
+
+# pdf(file = paste0(ms_figure_dir,"1.1.5.DEG_cluster3_msc-bone-fat_cells.pdf"), width =  14, height = 18)
+tmp_gene = c("Bglap","Bglap2","Col1a1","Col1a2","Sparc")
+FeaturePlot(msc_ocl_seurat,
+            features = tmp_gene,
+            ncol = 2,
+            dims = c(1,3),
+            cols = c("grey","pink","red"))
+# dev.off()
+rm(tmp_gene)
+```
+
